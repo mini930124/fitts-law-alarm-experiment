@@ -268,8 +268,8 @@ canvas{display:block;width:100%;height:auto;touch-action:none;cursor:crosshair}
       return;
     }
     const rows=[
-      ['Trial','A','W','MT'],
-      ...results.map(r=>[r.Trial,r.A,r.W,r.MT.toFixed(3)])
+      ['Trial','A','W','ID','MT'],
+      ...results.map(r=>[r.Trial,r.A,r.W,r.ID.toFixed(3),r.MT.toFixed(3)])
     ];
     const csv='\uFEFF'+rows.map(row=>row.join(',')).join('\r\n');
     const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
