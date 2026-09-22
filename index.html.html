@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smartphone Alarm Dismissal — Fitts' Law Experiment</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:22px;background:#eef1f5;color:#17202a;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+h1{margin:0 0 4px;font-size:25px}.sub{color:#68717d;margin-bottom:14px}
+.tools{display:flex;gap:9px;justify-content:center;flex-wrap:wrap;margin:12px}
+button{border:0;border-radius:10px;padding:10px 15px;background:#252c35;color:white;font-weight:600;cursor:pointer}
+button:disabled{opacity:.42;cursor:not-allowed}
+#csv{background:#1677ff}
+.canvas-shell{width:360px;max-width:94vw;margin:auto;border:7px solid #202124;border-radius:48px;overflow:hidden;background:#050506;box-shadow:0 18px 45px #0004}
+canvas{display:block;width:100%;height:auto;touch-action:none;cursor:crosshair}
+.status{max-width:520px;margin:15px auto 0;padding:12px 15px;background:#fff;border:1px solid #dfe3e8;border-radius:14px;text-align:left}
+.status b{font-size:14px}.status div{font-size:12px;color:#747c87;margin-top:4px}
+.note{max-width:700px;margin:12px auto;color:#606a76;font-size:13px;line-height:1.45}
+</style>
+</head>
+<body>
+<h1>Smartphone Alarm Dismissal</h1>
+<div class="sub">A Fitts' Law Experiment</div>
+
+<div class="tools">
+  <button id="startBtn">Start Experiment</button>
+  <button id="csvBtn" disabled>↓ Download CSV</button>
+  <button id="resetBtn">Reset</button>
+</div>
+
+<div class="canvas-shell">
+  <canvas id="experimentCanvas" width="360" height="783"></canvas>
+</div>
+
+<div class="status">
+  <b>Experiment Data</b>
+  <div id="statusText">Complete at least one trial to export CSV data.</div>
+</div>
+
+<div class="note">
+  Click Start Experiment once, then click each red STOP target as quickly and accurately as possible.
+  The next alarm appears automatically.
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('experimentCanvas');
+  const ctx = canvas.getContext('2d');
+  const startBtn = document.getElementById('startBtn');
+  const csvBtn = document.getElementById('csvBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const statusText = document.getElementById('statusText');
+
+  // Experimental design: 3 distances × 3 widths × 5 repetitions = 45 trials.
+  const A_LEVELS = [120, 200, 280];
+  const W_LEVELS = [44, 64, 84];
+  const REPETITIONS = 5;
+
+  let trials = [];
+  let results = [];
+  let trialIndex = 0;
+  let running = false;
+  let target = null;
+  let lastPoint = {x:180, y:650};
+  let startTime = null;
+  let interTrialTimer = null;
+
+  function shuffle(a){
+    for(let i=a.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [a[i],a[j]]=[a[j],a[i]];
+    }
+    return a;
+  }
+
+  function buildTrials(){
+    const t=[];
+    for(let r=1;r<=REPETITIONS;r++)
+      for(const A of A_LEVELS)
+        for(const W of W_LEVELS)
+          t.push({A,W,repetition:r});
+    return shuffle(t);
+  }
+
+  function roundedRect(x,y,w,h,r,fill){
+    ctx.beginPath();
+    ctx.roundRect(x,y,w,h,r);
+    ctx.fillStyle=fill;
+    ctx.fill();
+  }
+
+  function drawBase(message='Tap Start Experiment to begin'){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const g=ctx.createLinearGradient(0,0,0,canvas.height);
+    g.addColorStop(0,'#050506'); g.addColorStop(1,'#111113');
+    ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // Dynamic Island
+    roundedRect(134,12,92,27,16,'#000');
+
+    // Status bar
+    ctx.fillStyle='#f5f5f7'; ctx.font='600 12px -apple-system,Arial';
+    ctx.textAlign='left'; ctx.fillText('7:00',24,31);
+    ctx.textAlign='right'; ctx.fillText('●  Wi-Fi  ▰',335,31);
+
+    // Alarm heading
+    ctx.textAlign='center';
+    ctx.fillStyle='#ff9f0a'; ctx.font='600 15px -apple-system,Arial';
+    ctx.fillText('●  ALARM',180,87);
+
+    ctx.fillStyle='#ffffff'; ctx.font='200 70px -apple-system,Arial';
+    ctx.fillText('07:00',180,160);
+
+    ctx.font='500 20px -apple-system,Arial'; ctx.fillText('Alarm',180,197);
+    ctx.fillStyle='#b8b8bd'; ctx.font='15px -apple-system,Arial'; ctx.fillText('Wake Up',180,220);
+
+    ctx.fillStyle='#aaaab0'; ctx.font='14px -apple-system,Arial';
+    ctx.fillText(message,180,258);
+
+    // Home indicator
+    roundedRect(120,765,120,4,3,'#f5f5f5');
+
+    // Trial condition footer
+    ctx.fillStyle='#707078'; ctx.font='10px -apple-system,Arial';
+    ctx.fillText('A: 120 / 200 / 280 px   •   W: 44 / 64 / 84 px',180,738);
+  }
+
+  function validPosition(x,y,W){
+    const r=W/2;
+    return x>=r+10 && x<=canvas.width-r-10 &&
+           y>=300+r && y<=620-r;
+  }
+
+  function findTarget(origin,A,W){
+    // Search randomized angles first, then all directions.
+    const angles=shuffle([-Math.PI/2,-2.35,-.79,Math.PI,0,-1.2,-1.95,2.75,.35,1.57,2.2,.8]);
+    for(const th of angles){
+      const x=origin.x+A*Math.cos(th), y=origin.y+A*Math.sin(th);
+      if(validPosition(x,y,W)) return {x,y,W,A};
+    }
+    for(let deg=0;deg<360;deg+=2){
+      const th=deg*Math.PI/180;
+      const x=origin.x+A*Math.cos(th), y=origin.y+A*Math.sin(th);
+      if(validPosition(x,y,W)) return {x,y,W,A};
+    }
+    return null;
+  }
+
+  function drawTarget(){
+    if(!target) return;
+    ctx.beginPath();
+    ctx.arc(target.x,target.y,target.W/2,0,Math.PI*2);
+    ctx.fillStyle='#ff453a';
+    ctx.shadowColor='rgba(0,0,0,.5)'; ctx.shadowBlur=12; ctx.shadowOffsetY=4;
+    ctx.fill();
+    ctx.shadowColor='transparent';
+
+    ctx.fillStyle='#fff';
+    ctx.font=`700 ${Math.max(9,Math.min(13,target.W/5))}px -apple-system,Arial`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('STOP',target.x,target.y);
+    ctx.textBaseline='alphabetic';
+  }
+
+  function renderTrial(){
+    drawBase('Alarm ringing');
+    ctx.fillStyle='#8b8b92'; ctx.font='12px -apple-system,Arial';
+    ctx.textAlign='center';
+    ctx.fillText(`Trial ${trialIndex+1} / ${trials.length}`,180,285);
+    drawTarget();
+  }
+
+  function nextTrial(){
+    if(!running || trialIndex>=trials.length) return;
+    const c=trials[trialIndex];
+    target=findTarget(lastPoint,c.A,c.W);
+
+    // In the unlikely event the previous point cannot support this A,
+    // use a controlled origin that still preserves the exact requested A.
+    if(!target){
+      lastPoint={x:180,y:600};
+      target=findTarget(lastPoint,c.A,c.W);
+    }
+
+    if(!target){
+      alert('Unable to place this target. Please reset the experiment.');
+      resetExperiment();
+      return;
+    }
+
+    // Start the high-resolution timer immediately before drawing the target.
+    startTime=performance.now();
+    renderTrial();
+  }
+
+  function beginExperiment(){
+    clearTimeout(interTrialTimer);
+    trials=buildTrials();
+    results=[];
+    trialIndex=0;
+    running=true;
+    target=null;
+    lastPoint={x:180,y:600};
+    startTime=null;
+    startBtn.disabled=true;
+    csvBtn.disabled=true;
+    statusText.textContent='Experiment running. CSV export becomes available after the first trial.';
+    drawBase('Get ready…');
+    interTrialTimer=setTimeout(nextTrial,700);
+  }
+
+  function canvasPoint(evt){
+    const rect=canvas.getBoundingClientRect();
+    return {
+      x:(evt.clientX-rect.left)*(canvas.width/rect.width),
+      y:(evt.clientY-rect.top)*(canvas.height/rect.height)
+    };
+  }
+
+  canvas.addEventListener('pointerdown', evt => {
+    if(!running || !target || startTime===null) return;
+    const p=canvasPoint(evt);
+    const d=Math.hypot(p.x-target.x,p.y-target.y);
+
+    // Misses do not end the trial; timing continues until a successful target click.
+    if(d>target.W/2) return;
+
+    const endTime=performance.now();
+    const mt=endTime-startTime;
+    const c=trials[trialIndex];
+
+    results.push({
+      Trial:trialIndex+1,
+      A:c.A,
+      W:c.W,
+      ID:Math.log2(c.A/c.W+1),
+      MT:mt
+    });
+
+    csvBtn.disabled=false;
+    statusText.textContent=`${results.length} trial${results.length===1?'':'s'} recorded. CSV export is available.`;
+
+    lastPoint={x:target.x,y:target.y};
+    target=null;
+    startTime=null;
+    trialIndex++;
+
+    if(trialIndex>=trials.length){
+      running=false;
+      startBtn.disabled=false;
+      drawBase('Experiment complete');
+      ctx.fillStyle='#fff'; ctx.font='600 22px -apple-system,Arial';
+      ctx.textAlign='center'; ctx.fillText('45 / 45 Trials Complete',180,390);
+      ctx.fillStyle='#b8b8bd'; ctx.font='14px -apple-system,Arial';
+      ctx.fillText('Download your CSV data above.',180,420);
+      statusText.textContent='45 / 45 trials completed. Your A, W, and MT data are ready to export.';
+    }else{
+      drawBase('Next alarm…');
+      interTrialTimer=setTimeout(nextTrial,450);
+    }
+  });
+
+  function downloadCSV(){
+    if(results.length===0){
+      alert('No trial data is available yet.');
+      return;
+    }
+    const rows=[
+      ['Trial','A','W','MT'],
+      ...results.map(r=>[r.Trial,r.A,r.W,r.MT.toFixed(3)])
+    ];
+    const csv='\uFEFF'+rows.map(row=>row.join(',')).join('\r\n');
+    const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='smartphone_alarm_fitts_law_data.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    statusText.textContent=`CSV exported (${results.length} trials): smartphone_alarm_fitts_law_data.csv`;
+  }
+
+  function resetExperiment(){
+    clearTimeout(interTrialTimer);
+    trials=[]; results=[]; trialIndex=0; running=false;
+    target=null; startTime=null; lastPoint={x:180,y:600};
+    startBtn.disabled=false; csvBtn.disabled=true;
+    statusText.textContent='Complete at least one trial to export CSV data.';
+    drawBase();
+  }
+
+  startBtn.addEventListener('click',beginExperiment);
+  csvBtn.addEventListener('click',downloadCSV);
+  resetBtn.addEventListener('click',resetExperiment);
+
+  drawBase();
+})();
+</script>
+</body>
+</html>
